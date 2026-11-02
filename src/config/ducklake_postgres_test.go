@@ -22,7 +22,7 @@ func TestLoadPostgresDuckLakeCatalog(t *testing.T) {
 	if cfg.Storage.DuckLake.CatalogType != "postgres" || cfg.Node.DuckLake.CatalogType != "postgres" {
 		t.Fatal("PostgreSQL catalog types were not normalized")
 	}
-	if NodeAuthTokenFilePath(cfg.Node.DuckLake.CatalogPath) != "/data/.homer_node_auth_token" {
+	if NodeAuthTokenFilePath(cfg.Node.DuckLake.CatalogPath) != "/var/lib/homer/.homer_node_auth_token" {
 		t.Fatal("connection string interpreted as token directory")
 	}
 }

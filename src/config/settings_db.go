@@ -4,7 +4,10 @@
 
 package config
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 const defaultSettingsDBPath = "/var/lib/homer/homer_settings.duckdb"
 
@@ -39,4 +42,32 @@ func SettingsDBLocalPath(value string) string {
 		return defaultSettingsDBPath
 	}
 	return value
+}
+
+// LocalSecretAnchor supplies the existing secret-file helpers with a local
+// filename anchor. A configured directory overrides both backend defaults.
+func LocalSecretAnchor(path, directory string) string {
+	if directory = strings.TrimSpace(directory); directory != "" {
+		return filepath.Join(directory, "homer_settings.duckdb")
+	}
+	if IsPostgresSettingsPath(path) {
+		return defaultSettingsDBPath
+	}
+	return path
+}
+
+// NodeSecretAnchor uses an attached PostgreSQL volume when the node's legacy
+// single-catalog field still has its local default.
+func NodeSecretAnchor(cfg *NodeConfig) string {
+	path := strings.TrimSpace(cfg.DuckLake.CatalogPath)
+	for _, volume := range cfg.DuckLake.Volumes {
+		if IsPostgresSettingsPath(volume.CatalogPath) {
+			path = volume.CatalogPath
+			break
+		}
+	}
+	if path == "" && len(cfg.DuckLake.Volumes) > 0 {
+		path = cfg.DuckLake.Volumes[0].CatalogPath
+	}
+	return LocalSecretAnchor(path, cfg.LocalSecretsDir)
 }

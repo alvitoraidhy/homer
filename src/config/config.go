@@ -334,6 +334,10 @@ type StorageConfig struct {
 
 // NodeConfig configures the FlightSQL node module
 type NodeConfig struct {
+	// LocalSecretsDir overrides the directory for generated authentication secrets.
+	// Empty preserves file-backed defaults; PostgreSQL defaults to /var/lib/homer.
+	LocalSecretsDir string `json:"local_secrets_dir" mapstructure:"local_secrets_dir"`
+
 	Enable bool `json:"enable" mapstructure:"enable" default:"false"`
 
 	// FlightSQL server settings
@@ -355,6 +359,10 @@ type SmartRoutingConfig struct {
 
 // CoordinatorConfig configures the API coordinator module
 type CoordinatorConfig struct {
+	// LocalSecretsDir overrides the directory for generated authentication secrets.
+	// Empty preserves file-backed defaults; PostgreSQL defaults to /var/lib/homer.
+	LocalSecretsDir string `json:"local_secrets_dir" mapstructure:"local_secrets_dir"`
+
 	Enable bool `json:"enable" mapstructure:"enable" default:"false"`
 
 	// SmartRouting: skip nodes with no data in the query time range (UI path).
@@ -2033,6 +2041,14 @@ func applyDefaults(cfg *Config) {
 		cfg.MCP.LLM.MaxTokens = 400
 	}
 
+	// PostgreSQL has no filesystem directory for local authentication secrets.
+	if cfg.Node.LocalSecretsDir == "" && NodeSecretAnchor(&cfg.Node) == defaultSettingsDBPath {
+		cfg.Node.LocalSecretsDir = filepath.Dir(defaultSettingsDBPath)
+	}
+	if cfg.Coordinator.LocalSecretsDir == "" && IsPostgresSettingsPath(cfg.Coordinator.SettingsDBPath) {
+		cfg.Coordinator.LocalSecretsDir = filepath.Dir(defaultSettingsDBPath)
+	}
+
 	// Official Compose used to ship these strings. They are public, so treat
 	// them as unset and let the generators below persist a random value
 	// (GHSA-9crr-mrfj-hjxr).
@@ -2048,10 +2064,7 @@ func applyDefaults(cfg *Config) {
 	// Exposed binds (default 0.0.0.0) with empty auth_token get an auto-generated
 	// persisted token (GHSA-rm5w-rqr7-2h54). Loopback-only binds may stay empty.
 	if cfg.Node.Enable {
-		catalogPath := strings.TrimSpace(cfg.Node.DuckLake.CatalogPath)
-		if catalogPath == "" && len(cfg.Node.DuckLake.Volumes) > 0 {
-			catalogPath = strings.TrimSpace(cfg.Node.DuckLake.Volumes[0].CatalogPath)
-		}
+		catalogPath := NodeSecretAnchor(&cfg.Node)
 		tok, _, _, err := ResolveNodeFlightAuthToken(
 			cfg.Node.FlightServer.Host,
 			cfg.Node.FlightServer.AuthToken,
@@ -2080,7 +2093,7 @@ func applyDefaults(cfg *Config) {
 				fsqlTok = strings.TrimSpace(cfg.Node.FlightServer.AuthToken)
 			}
 		}
-		settingsPath := SettingsDBLocalPath(strings.TrimSpace(cfg.Coordinator.SettingsDBPath))
+		settingsPath := LocalSecretAnchor(SettingsDBLocalPath(strings.TrimSpace(cfg.Coordinator.SettingsDBPath)), cfg.Coordinator.LocalSecretsDir)
 		tok, _, _, err := ResolveRequiredAuthToken(fsqlTok, settingsPath)
 		if err == nil {
 			cfg.Coordinator.FlightSQLServer.AuthToken = tok
