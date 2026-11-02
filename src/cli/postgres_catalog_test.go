@@ -43,10 +43,7 @@ func TestPostgresCatalogCLIReadsInlinedRows(t *testing.T) {
 	}
 	defer writer.Close()
 	for _, ext := range []string{"ducklake", "postgres"} {
-		if _, err := writer.Exec("LOAD " + ext); err == nil {
-			continue
-		}
-		if _, err := writer.Exec("INSTALL " + ext + " FROM 'https://extensions.duckdb.org'; LOAD " + ext); err != nil {
+		if _, err := writer.Exec("LOAD " + ext); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -65,8 +62,18 @@ func TestPostgresCatalogCLIReadsInlinedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close()
+	tables := discoverSchemaViews(reader, cfg.LakeName)
+	if len(tables) != 1 || tables[0] != "lake.test" {
+		t.Fatalf("tables and completion discovery: %v", tables)
+	}
+	completer := newSQLCLICompleter(cfg.LakeName, cfg.DataPath, func() []string { return tables })
+	line := []rune("SELECT * FROM lake.te")
+	candidates, _ := completer.Do(line, len(line))
+	if len(candidates) == 0 {
+		t.Fatal("table missing from completion")
+	}
 	var id int
-	if err := reader.QueryRow("SELECT id FROM lake.test").Scan(&id); err != nil || id != 42 {
+	if err := reader.QueryRow("SELECT id FROM test").Scan(&id); err != nil || id != 42 {
 		t.Fatalf("metadata read: %d %v", id, err)
 	}
 	if _, err := reader.Exec("INSERT INTO lake.test VALUES (43)"); err == nil {

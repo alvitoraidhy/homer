@@ -175,6 +175,12 @@ func openDuckLakeReadOnly(cfg ducklake.Config) (*sql.DB, error) {
 			_ = db.Close()
 			return nil, ducklake.CatalogError(cfg.CatalogPath, "CLI attach", err)
 		}
+		// USE is session-local. Keep the interactive CLI on this connection.
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec(`USE "` + strings.ReplaceAll(cfg.LakeName, `"`, `""`) + `".main`); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("select DuckLake catalog: %w", err)
+		}
 		return db, nil
 	}
 	fmt.Printf("Data path: %s\n", dataPath)
@@ -547,8 +553,11 @@ func printTables(tables []string) {
 
 func discoverSchemaViews(db *sql.DB, schemaName string) []string {
 	var tables []string
-	query := fmt.Sprintf("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s'", schemaName)
-	rows, err := db.Query(query)
+	query := `SELECT table_name FROM information_schema.tables
+		WHERE (table_catalog = current_database() AND table_schema = $1)
+		   OR (table_catalog = $1 AND table_schema = 'main')
+		ORDER BY table_name`
+	rows, err := db.Query(query, schemaName)
 	if err != nil {
 		return tables
 	}
