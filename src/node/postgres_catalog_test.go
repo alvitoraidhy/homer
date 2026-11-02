@@ -42,10 +42,7 @@ func TestNodeReadsPostgresDuckLakeCatalog(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, ext := range []string{"ducklake", "postgres"} {
-		if _, err := db.Exec("LOAD " + ext); err == nil {
-			continue
-		}
-		if _, err := db.Exec("INSTALL " + ext + " FROM 'https://extensions.duckdb.org'; LOAD " + ext); err != nil {
+		if _, err := db.Exec("LOAD " + ext); err != nil {
 			t.Fatal(err)
 		}
 	}

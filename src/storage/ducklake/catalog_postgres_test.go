@@ -161,6 +161,48 @@ func TestPostgresDuckLakeTieredVolumes(t *testing.T) {
 	}
 }
 
+func TestPostgresTierMove(t *testing.T) {
+	dsn, dir := postgresLakeFixture(t)
+	tsm, err := NewTieredStorageManager(TieredStorageConfig{Enable: true, CatalogPath: dsn, MoveEngine: "native",
+		TuningThreads: 1, TuningMemoryLimit: "256MB", TuningTempDirectory: filepath.Join(dir, "spill"),
+		Volumes: []Volume{{Name: "hot", Type: VolumeTypeLocal, Priority: 0, Path: filepath.Join(dir, "hot"), LakeName: "hot"},
+			{Name: "cold", Type: VolumeTypeLocal, Priority: 1, Path: filepath.Join(dir, "cold"), LakeName: "cold"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tsm.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tsm.Stop() })
+	for _, stmt := range []string{
+		"CREATE TABLE hot.packets (id BIGINT, date DATE, payload VARCHAR)",
+		"CREATE TABLE cold.packets (id BIGINT, date DATE, payload VARCHAR)",
+		"INSERT INTO hot.packets VALUES (1, DATE '2026-01-01', 'SIP/2.0 200 OK'), (2, DATE '2026-01-01', 'BYE'), (3, DATE '2026-01-02', 'INVITE')",
+	} {
+		if _, err := tsm.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := tsm.MovePartition("packets", "2026-01-01", tsm.volumes[0], tsm.volumes[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var hot, cold int
+	if err := tsm.db.QueryRow("SELECT count(*) FROM hot.packets WHERE id=3 AND date=DATE '2026-01-02'").Scan(&hot); err != nil {
+		t.Fatal(err)
+	}
+	if err := tsm.db.QueryRow("SELECT count(*) FROM cold.packets WHERE date=DATE '2026-01-01' AND ((id=1 AND payload='SIP/2.0 200 OK') OR (id=2 AND payload='BYE'))").Scan(&cold); err != nil {
+		t.Fatal(err)
+	}
+	if hot != 1 || cold != 2 {
+		t.Fatalf("tier move lost or duplicated rows: hot=%d cold=%d", hot, cold)
+	}
+	if err := tsm.db.QueryRow("SELECT count(*) FROM hot.packets").Scan(&hot); err != nil || hot != 1 {
+		t.Fatalf("source not deleted: %d %v", hot, err)
+	}
+}
+
 func TestPostgresTierStartupClosesOnAttachFailure(t *testing.T) {
 	dsn, dir := postgresLakeFixture(t)
 	dsn, err := suffixedPostgresCatalog(dsn, "missing")
