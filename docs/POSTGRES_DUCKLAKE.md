@@ -24,7 +24,7 @@ separate migration.
 Run this command using the DuckDB engine and OS user that run Homer:
 
 ```sh
-homer-core --install-extensions
+homer-core system --install-extensions
 ```
 
 ## 2. Configure a single catalog
@@ -37,7 +37,7 @@ connection details and filesystem paths for your deployment:
   "storage": {
     "ducklake": {
       "catalog_type": "postgres",
-      "catalog_path": "postgres://homer:password@localhost:5432/homer_catalog?sslmode=require",
+      "catalog_path": "postgres://homer:placeholder@127.0.0.1:5432/homer_catalog?sslmode=require",
       "data_path": "/var/lib/homer/parquet",
       "lake_name": "homer_lake",
       "shard_count": 1,
@@ -45,9 +45,10 @@ connection details and filesystem paths for your deployment:
     }
   },
   "node": {
+    "local_secrets_dir": "/var/lib/homer",
     "ducklake": {
       "catalog_type": "postgres",
-      "catalog_path": "postgres://homer:password@localhost:5432/homer_catalog?sslmode=require",
+      "catalog_path": "postgres://homer:placeholder@127.0.0.1:5432/homer_catalog?sslmode=require",
       "data_path": "/var/lib/homer/parquet",
       "tuning": { "temp_directory": "/var/lib/homer/node-spill" }
     }
@@ -55,7 +56,7 @@ connection details and filesystem paths for your deployment:
 }
 ```
 
-Libpq keyword DSNs such as `host=localhost dbname=homer_catalog user=homer` also
+Libpq keyword DSNs such as `host=127.0.0.1 dbname=homer_catalog user=homer` also
 work. A connection string in `catalog_path` selects PostgreSQL even when
 `catalog_type` retains its SQLite default. Setting `catalog_type=postgres` with
 a file path is rejected. Empty catalog type and a normal file path preserve the
@@ -64,6 +65,8 @@ existing SQLite backend. `postgresql` is accepted as a catalog type alias.
 Data paths can still be local, S3, or Azure using the existing credential settings.
 Writers and nodes must see the same data files. Configure an explicit local spill
 directory: a connection string has no catalog directory from which to derive one.
+Writer, node and maintenance startup log a warning when this is unset; in-memory
+DuckDB cannot spill and memory-heavy queries can fail with out-of-memory errors.
 
 ## 3. Start Homer and verify access
 
@@ -86,6 +89,7 @@ PostgreSQL databases or require CREATE DATABASE privileges in production. Databa
 suffixes are applied to the DSN's database name; credentials and connection options
 are retained. Database names longer than PostgreSQL's 63-byte limit are rejected.
 Shard DuckDB instances also use separate spill subdirectories when configured.
+Tiering file maintenance uses its own `tiering-maintenance` spill subdirectory.
 
 For node reads, explicitly configure one volume for each shard, as with the
 existing independent-catalog layout. For example, for two shards:
@@ -98,13 +102,13 @@ existing independent-catalog layout. For example, for two shards:
         {
           "name": "0", "type": "local",
           "catalog_type": "postgres",
-          "catalog_path": "postgres://homer:password@localhost:5432/homer_catalog_0?sslmode=require",
+          "catalog_path": "postgres://homer:placeholder@127.0.0.1:5432/homer_catalog_0?sslmode=require",
           "path": "/var/lib/homer/parquet"
         },
         {
           "name": "1", "type": "local",
           "catalog_type": "postgres",
-          "catalog_path": "postgres://homer:password@localhost:5432/homer_catalog_1?sslmode=require",
+          "catalog_path": "postgres://homer:placeholder@127.0.0.1:5432/homer_catalog_1?sslmode=require",
           "path": "/var/lib/homer/parquet"
         }
       ]
@@ -115,7 +119,8 @@ existing independent-catalog layout. For example, for two shards:
 
 The node's existing volume-query logic handles these catalogs. The SQL CLI
 attaches the PostgreSQL catalog selected by its configuration, including inline
-rows, in read-only mode. To inspect a shard with the CLI, select that shard's DSN;
+rows, in read-only mode. It selects `<lake>.main` as the search path, so
+`tables`, tab completion and unqualified table names work. To inspect a shard with the CLI, select that shard's DSN;
 the CLI does not automatically union PostgreSQL shard catalogs.
 
 ## Maintain PostgreSQL catalogs
@@ -140,9 +145,19 @@ validation rejects the combination instead of attaching an empty base catalog.
 
 ## Local secrets and connection details
 
-Catalog DSNs are redacted from config output and attachment errors. Node auth
-secrets use the normal local `/data` fallback rather than treating the DSN as a
-filesystem directory.
+Set `node.local_secrets_dir` and `coordinator.local_secrets_dir` to the same
+persistent local directory when both components run together. PostgreSQL defaults
+both to `/var/lib/homer`; the directory must be writable by the Homer process.
+Node/FlightSQL tokens (`.homer_node_auth_token`) and the coordinator JWT secret
+(`.homer_jwt_secret`) are created there with mode `0600`. You can override the
+directory with `HOMER_NODE_LOCAL_SECRETS_DIR` and
+`HOMER_COORDINATOR_LOCAL_SECRETS_DIR`. File-backed installations keep their
+existing locations unless the new fields are explicitly set. Do not use an S3
+or Azure data path for these local files.
+
+Config display hides DSNs unless `--include-secrets` is requested. Attachment
+errors preserve the server error, database name and host while redacting passwords.
+See the [configuration reference](ENVIRONMENT_VARIABLES.md#local-authentication-secrets).
 
 ## Troubleshooting
 
@@ -161,13 +176,13 @@ With a disposable PostgreSQL server and an administrative test DSN (CREATE
 DATABASE required for the tests only), run from `src`:
 
 ```sh
-HOMER_TEST_POSTGRES_DSN='postgres://postgres:password@127.0.0.1:5432/test?sslmode=disable' \
+HOMER_TEST_POSTGRES_DSN='postgres://homer:placeholder@127.0.0.1:5432/test?sslmode=disable' \
   go test ./storage/ducklake ./node ./writer ./config ./cli
 ```
 
 Tests create and drop private databases. They cover shard persistence after
 shutdown, independent shard databases and spill paths, maintenance attachment and
-merge calls, tiered catalog isolation, node reads, inline-row CLI reads, DSN
+merge calls, tiered catalog isolation and a real partition move with a repeat attempt, node reads, inline-row CLI reads, DSN
 handling, and the SQLite-specific maintenance guards.
 
 ## Further reading

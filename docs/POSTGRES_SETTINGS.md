@@ -23,7 +23,7 @@ not open the previous settings file while PostgreSQL is configured.
 Run this command as the OS user that runs Homer:
 
 ```sh
-homer-core --install-extensions
+homer-core system --install-extensions
 ```
 
 The command includes the `postgres` extension.
@@ -36,7 +36,8 @@ credentials, and database name with your PostgreSQL connection details:
 ```json
 {
   "coordinator": {
-    "settings_db_path": "postgres://homer:password@localhost:5432/homer_settings?sslmode=require"
+    "local_secrets_dir": "/var/lib/homer",
+    "settings_db_path": "postgres://homer:placeholder@127.0.0.1:5432/homer_settings?sslmode=require"
   }
 }
 ```
@@ -44,14 +45,14 @@ credentials, and database name with your PostgreSQL connection details:
 Alternatively, set the environment variable:
 
 ```sh
-export HOMER_COORDINATOR_SETTINGS_DB_PATH='postgres://homer:password@localhost:5432/homer_settings?sslmode=require'
+export HOMER_COORDINATOR_SETTINGS_DB_PATH='postgres://homer:placeholder@127.0.0.1:5432/homer_settings?sslmode=require'
 ```
 
 Homer recognizes both `postgres://` and `postgresql://` URLs. Libpq keyword
 strings also work, for example:
 
 ```text
-host=localhost dbname=homer_settings user=homer
+host=127.0.0.1 dbname=homer_settings user=homer
 ```
 
 Recognized connection strings are validated before use. A malformed connection
@@ -75,9 +76,15 @@ The administrator password reset command uses the configured settings backend.
 The existing migration command requires a local DuckDB destination; when your
 coordinator uses PostgreSQL, supply a local file with `--duckdb`.
 
-With PostgreSQL settings, local JWT and coordinator authentication secrets use
-`/var/lib/homer`. Make that directory writable and persistent for your deployment.
-With file-backed settings, those secrets remain beside the settings file.
+Set `coordinator.local_secrets_dir` to a persistent directory writable by the
+Homer process. PostgreSQL defaults to `/var/lib/homer`; generated JWT and
+FlightSQL authentication files are written there with mode `0600`. A node using
+a PostgreSQL catalog has the same default: set `node.local_secrets_dir` to the
+same directory when running together. Environment overrides are
+`HOMER_COORDINATOR_LOCAL_SECRETS_DIR` and `HOMER_NODE_LOCAL_SECRETS_DIR`.
+With file-backed settings, secrets remain beside the settings file unless the
+new field is explicitly set. See the
+[configuration reference](ENVIRONMENT_VARIABLES.md#local-authentication-secrets).
 
 Config display redacts the connection string unless you supply
 `--include-secrets`, including when selecting it directly with `--section`.
@@ -90,7 +97,7 @@ Connection strings are not logged as file paths.
 | Settings initialization fails | Confirm that the database already exists, the credentials work, and the role can create tables in `public`. |
 | PostgreSQL extension cannot load | Install extensions using the same DuckDB engine and OS user that run Homer. |
 | Existing settings are missing after switching | Local settings are not migrated automatically. Check which backend is configured. |
-| Local authentication secrets cannot be saved | Check permissions and persistence for `/var/lib/homer`. |
+| Local authentication secrets cannot be saved | Check permissions and persistence for `coordinator.local_secrets_dir`. |
 | Migration command rejects PostgreSQL | Supply a local DuckDB destination with `--duckdb`. |
 
 ## Query behavior
@@ -100,11 +107,27 @@ need `RETURNING` use a native PostgreSQL connection for that query. Each native
 query has its own connection and transaction, adding authentication and network
 overhead.
 
+Values are bound as parameters, preserving backslashes, quotes and full JSON/Lua
+content on both backends. Identity/text fields retain their existing validation:
+truncate to 1,000 runes first, then strip NUL and control characters below U+0020
+except tab, newline and carriage return. JSON/Lua blobs strip NUL without
+truncation. Schema DDL is sent one statement at a time with
+`public`-qualified table and sequence names. Metadata refresh errors fail startup.
+
 These queries cannot join a DuckDB transaction. Existing settings services do not
 use explicit multi-statement transactions. Writes commit before subsequent
 DuckDB autocommit reads; an already-open DuckDB transaction may retain an earlier
 snapshot. As with other database writes, an error after a write reaches the
 server can leave its commit outcome uncertain.
+
+## Compatibility
+
+For identity/text fields, the only remaining local DuckDB storage difference
+from earlier versions is that bound values no longer double backslashes. DuckDB
+does not treat backslashes as escapes in ordinary single-quoted literals, so
+earlier versions stored them doubled. Existing rows whose username, category or
+param contained a backslash therefore will not match a lookup by the original
+value. The strip and truncation rules remain unchanged; no migration is included.
 
 ## Run regression tests
 
@@ -118,21 +141,30 @@ Run local regression tests from `src`:
 go test ./config ./coordinator/services ./coordinator/handlers ./coordinator ./cli
 ```
 
+Install the matching DuckDB extensions using the checksum-verified bundle first
+(from the repository root, for the test platform):
+
+```sh
+./scripts/download_duckdb_extensions.sh
+mkdir -p "$HOME/.duckdb/extensions"
+cp -R bundled_extensions/v1.5.6 "$HOME/.duckdb/extensions/"
+```
+
 For integration tests, start a disposable PostgreSQL server:
 
 ```sh
-docker run --detach --name homer-settings-pg-probe \
-  --publish 127.0.0.1:55432:5432 \
-  --env POSTGRES_PASSWORD=homer_probe \
-  --env POSTGRES_DB=homer_probe postgres:17
+docker run --detach --name homerpg-settings-probe \
+  --memory 6g --publish 127.0.0.1:55432:5432 \
+  --env POSTGRES_USER=homer --env POSTGRES_PASSWORD=placeholder \
+  --env POSTGRES_DB=homer_probe postgres:18
 
-docker exec homer-settings-pg-probe pg_isready -U postgres -d homer_probe
+docker exec homerpg-settings-probe pg_isready -U homer -d homer_probe
 
 # Run from src; the test role needs CREATE DATABASE privileges.
-HOMER_TEST_POSTGRES_DSN='postgres://postgres:homer_probe@127.0.0.1:55432/homer_probe?sslmode=disable' \
+HOMER_TEST_POSTGRES_DSN='postgres://homer:placeholder@127.0.0.1:55432/homer_probe?sslmode=disable' \
   go test ./coordinator/services -run 'TestPostgresSettingsServices' -count=1 -v
 
-docker rm --force --volumes homer-settings-pg-probe
+docker rm --force --volumes homerpg-settings-probe
 ```
 
 The integration test covers schema initialization, settings CRUD,
