@@ -18,7 +18,7 @@ func IsPostgresCatalogPath(path string) bool { return config.IsPostgresSettingsP
 // CatalogDisplayPath is safe to include in logs without exposing a DSN.
 func CatalogDisplayPath(path string) string {
 	if IsPostgresCatalogPath(path) {
-		return "PostgreSQL"
+		return config.PostgresDisplayPath(path)
 	}
 	return path
 }
@@ -31,7 +31,7 @@ func ResolveCatalogType(ct CatalogType, path string) (CatalogType, error) {
 		return "", fmt.Errorf("unsupported DuckLake catalog_type %q", ct)
 	}
 	if IsPostgresCatalogPath(path) {
-		if _, err := pgx.ParseConfig(strings.TrimSpace(path)); err != nil {
+		if _, err := pgx.ParseConfig(config.NormalizePostgresDSN(path)); err != nil {
 			return "", fmt.Errorf("invalid PostgreSQL DuckLake catalog_path")
 		}
 		return CatalogPostgres, nil
@@ -49,7 +49,7 @@ func CatalogAttachSQL(ct CatalogType, path, lake, data string, override bool) (s
 		return "", err
 	}
 	if ct == CatalogPostgres {
-		path = strings.TrimSpace(path)
+		path = config.NormalizePostgresDSN(path)
 	}
 	quote := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	extra := ""
@@ -64,8 +64,8 @@ func CatalogAttachSQL(ct CatalogType, path, lake, data string, override bool) (s
 // databases provisioned by the operator. It never applies filepath operations
 // to DSNs, and preserves credentials, TLS settings and other connection options.
 func suffixedPostgresCatalog(path, suffix string) (string, error) {
-	path = strings.TrimSpace(path)
-	cfg, err := pgx.ParseConfig(strings.TrimSpace(path))
+	path = config.NormalizePostgresDSN(path)
+	cfg, err := pgx.ParseConfig(config.NormalizePostgresDSN(path))
 	if err != nil {
 		return "", fmt.Errorf("invalid PostgreSQL DuckLake catalog_path")
 	}
@@ -91,7 +91,7 @@ func suffixedPostgresCatalog(path, suffix string) (string, error) {
 // CatalogError keeps connection strings out of DuckDB errors which echo ATTACH.
 func CatalogError(path, action string, err error) error {
 	if IsPostgresCatalogPath(path) {
-		return fmt.Errorf("%s PostgreSQL DuckLake catalog failed (connection details omitted)", action)
+		return fmt.Errorf("%s %s DuckLake catalog: %w", action, CatalogDisplayPath(path), config.PostgresError(path, err))
 	}
 	return fmt.Errorf("%s DuckLake catalog: %w", action, err)
 }

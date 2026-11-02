@@ -1,6 +1,5 @@
 // Copyright (C) 2026 Homer Server Contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//go:build !vet
 
 package ducklake
 
@@ -56,11 +55,8 @@ func postgresLakeFixture(t *testing.T) (string, string) {
 	}
 	defer installer.Close()
 	for _, ext := range []string{"ducklake", "postgres"} {
-		if _, err := installer.Exec("LOAD " + ext); err == nil {
-			continue
-		}
-		if _, err := installer.Exec("INSTALL " + ext + " FROM 'https://extensions.duckdb.org'"); err != nil {
-			t.Fatal(err)
+		if _, err := installer.Exec("LOAD " + ext); err != nil {
+			t.Fatalf("load checksum-verified %s extension (scripts/download_duckdb_extensions.sh): %v", ext, err)
 		}
 	}
 	return u.String(), t.TempDir()
@@ -148,5 +144,26 @@ func TestPostgresDuckLakeTieredVolumes(t *testing.T) {
 	}
 	if hot != 1 || cold != 2 {
 		t.Fatal("volumes are not isolated")
+	}
+}
+
+func TestPostgresTierStartupClosesOnAttachFailure(t *testing.T) {
+	dsn, dir := postgresLakeFixture(t)
+	dsn, err := suffixedPostgresCatalog(dsn, "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsm, err := NewTieredStorageManager(TieredStorageConfig{Enable: true, CatalogPath: dsn, TuningThreads: 1, TuningMemoryLimit: "128MB", TuningTempDirectory: dir,
+		Volumes: []Volume{{Name: "hot", Type: VolumeTypeLocal, Path: dir, LakeName: "hot"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tsm.Start()
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing catalog diagnostic: %v", err)
+	}
+	if tsm.db != nil {
+		_ = tsm.db.Close()
+		t.Fatal("failed start retained DuckDB")
 	}
 }

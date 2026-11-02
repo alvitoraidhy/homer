@@ -50,7 +50,7 @@ func openPostgresSettingsForTest(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, installErr := installer.Exec("INSTALL postgres FROM 'https://extensions.duckdb.org'")
+	_, installErr := installer.Exec("LOAD postgres")
 	_ = installer.Close()
 	if installErr != nil {
 		t.Fatal(installErr)
@@ -77,14 +77,17 @@ func openPostgresSettingsForTest(t *testing.T) *sql.DB {
 	// Exercise URL detection as well as the keyword DSN above.
 	uri := url.URL{Scheme: "postgresql", Host: net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))),
 		User: url.UserPassword(cfg.User, cfg.Password), Path: "/" + name, RawQuery: "sslmode=disable"}
-	uriDB, err := OpenSettingsDB(uri.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = uriDB.Close() })
-	var catalog string
-	if err := uriDB.QueryRow("SELECT current_database()").Scan(&catalog); err != nil || catalog != settingsPostgresCatalog {
-		t.Fatalf("URL selected wrong backend: %q %v", catalog, err)
+	for _, scheme := range []string{"postgresql", "POSTGRES", "PostgreSQL"} {
+		uri.Scheme = scheme
+		uriDB, err := OpenSettingsDB(uri.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = uriDB.Close() })
+		var catalog string
+		if err := uriDB.QueryRow("SELECT current_database()").Scan(&catalog); err != nil || catalog != settingsPostgresCatalog {
+			t.Fatalf("URL selected wrong backend: %q %v", catalog, err)
+		}
 	}
 	return db
 }
