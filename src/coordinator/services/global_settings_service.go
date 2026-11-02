@@ -86,12 +86,9 @@ func (s *GlobalSettingsService) GetByGUID(ctx context.Context, guid string) (*Gl
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`SELECT id, guid, partid, category, param, data
-		 FROM global_settings WHERE guid = '%s' LIMIT 1`,
-		escapeSQL(guid),
-	)
-	rows, err := s.db.QueryContext(ctx, query)
+	query := `SELECT id, guid, partid, category, param, data
+		 FROM global_settings WHERE guid = $1 LIMIT 1`
+	rows, err := s.db.QueryContext(ctx, query, sqlvalidator.SanitizeBoundString(guid))
 	if err != nil {
 		return nil, err
 	}
@@ -123,22 +120,15 @@ func (s *GlobalSettingsService) Create(ctx context.Context, item GlobalSetting) 
 	if len(item.Data) > 0 {
 		dataStr = string(item.Data)
 	}
-	insertSQL := fmt.Sprintf(
-		`INSERT INTO global_settings (guid, partid, category, param, data, create_date)
-		 VALUES ('%s', %d, '%s', '%s', '%s', current_timestamp)
-		 RETURNING guid`,
-		escapeSQL(item.GUID),
-		item.PartID,
-		escapeSQL(item.Category),
-		escapeSQL(item.Param),
-		escapeSQL(dataStr),
-	)
+	insertSQL := `INSERT INTO global_settings (guid, partid, category, param, data, create_date)
+		 VALUES ($1, $2, $3, $4, $5, current_timestamp)
+		 RETURNING guid`
 	var guid string
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, insertSQL).Scan(&guid); err != nil {
+	if err := queryRow(ctx, insertSQL, sqlvalidator.SanitizeBoundString(item.GUID), item.PartID, sqlvalidator.SanitizeBoundString(item.Category), sqlvalidator.SanitizeBoundString(item.Param), jsonDataParam(dataStr)).Scan(&guid); err != nil {
 		return item.GUID, err
 	}
 	return guid, nil
@@ -155,23 +145,16 @@ func (s *GlobalSettingsService) Update(ctx context.Context, guid string, item Gl
 	if len(item.Data) > 0 {
 		dataStr = string(item.Data)
 	}
-	updateSQL := fmt.Sprintf(
-		`UPDATE global_settings
-		 SET partid = %d, category = '%s', param = '%s', data = '%s'
-		 WHERE guid = '%s'
-		 RETURNING guid`,
-		item.PartID,
-		escapeSQL(item.Category),
-		escapeSQL(item.Param),
-		escapeSQL(dataStr),
-		escapeSQL(guid),
-	)
+	updateSQL := `UPDATE global_settings
+		 SET partid = $1, category = $2, param = $3, data = $4
+		 WHERE guid = $5
+		 RETURNING guid`
 	var updated string
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, updateSQL).Scan(&updated); err != nil {
+	if err := queryRow(ctx, updateSQL, item.PartID, sqlvalidator.SanitizeBoundString(item.Category), sqlvalidator.SanitizeBoundString(item.Param), jsonDataParam(dataStr), sqlvalidator.SanitizeBoundString(guid)).Scan(&updated); err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
 		}
@@ -184,16 +167,13 @@ func (s *GlobalSettingsService) Delete(ctx context.Context, guid string) (bool, 
 	if s.db == nil {
 		return false, fmt.Errorf("settings db not available")
 	}
-	deleteSQL := fmt.Sprintf(
-		`DELETE FROM global_settings WHERE guid = '%s' RETURNING id`,
-		escapeSQL(guid),
-	)
+	deleteSQL := `DELETE FROM global_settings WHERE guid = $1 RETURNING id`
 	var id int64
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, deleteSQL).Scan(&id); err != nil {
+	if err := queryRow(ctx, deleteSQL, sqlvalidator.SanitizeBoundString(guid)).Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
 		}

@@ -977,12 +977,10 @@ func ContainsForbiddenIdentifier(sql string, forbidden map[string]bool) bool {
 
 const maxSafeStringLen = 1000
 
-// SafeString sanitizes a user-supplied string value for safe interpolation
-// into a SQL single-quoted string context. It escapes single quotes, strips
-// null bytes and control characters, and enforces a length limit.
-//
-// Usage: fmt.Sprintf("column = '%s'", SafeString(userInput))
-func SafeString(s string) string {
+// SanitizeBoundString applies the text validation used by SafeString without
+// SQL escaping. Use it for identity/text values passed as bound parameters,
+// not JSON or script blobs. Truncation precedes control-character removal.
+func SanitizeBoundString(s string) string {
 	// Length limit (truncate safely on rune boundaries to avoid splitting UTF-8)
 	if len(s) > maxSafeStringLen {
 		runes := []rune(s)
@@ -1004,6 +1002,22 @@ func SafeString(s string) string {
 		if r < 0x20 && r != '\t' && r != '\n' && r != '\r' {
 			continue
 		}
+		b.WriteRune(r)
+	}
+
+	return b.String()
+}
+
+// SafeString sanitizes a user-supplied string value for safe interpolation
+// into a SQL single-quoted string context. It escapes quotes and backslashes
+// after applying the same validation as bound text parameters.
+//
+// Usage: fmt.Sprintf("column = '%s'", SafeString(userInput))
+func SafeString(s string) string {
+	s = SanitizeBoundString(s)
+	var b strings.Builder
+	b.Grow(len(s) + 10)
+	for _, r := range s {
 		// Escape single quotes
 		if r == '\'' {
 			b.WriteString("''")

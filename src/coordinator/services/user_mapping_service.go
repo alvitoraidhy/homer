@@ -12,6 +12,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+
+	"github.com/sipcapture/homer-core/src/coordinator/sqlvalidator"
 )
 
 // UserMappingService stores per-user protocol field overrides (widget column order/selection).
@@ -29,14 +31,11 @@ func (s *UserMappingService) ListForUser(ctx context.Context, username string) (
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`SELECT id, guid, username, partid, mapping_key, data
+	query := `SELECT id, guid, username, partid, mapping_key, data
 		 FROM user_mapping_settings
-		 WHERE username = '%s'
-		 ORDER BY id`,
-		escapeSQL(username),
-	)
-	rows, err := s.db.QueryContext(ctx, query)
+		 WHERE username = $1
+		 ORDER BY id`
+	rows, err := s.db.QueryContext(ctx, query, sqlvalidator.SanitizeBoundString(username))
 	if err != nil {
 		return nil, err
 	}
@@ -57,15 +56,11 @@ func (s *UserMappingService) Get(ctx context.Context, username, mappingKey strin
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`SELECT id, guid, username, partid, mapping_key, data
+	query := `SELECT id, guid, username, partid, mapping_key, data
 		 FROM user_mapping_settings
-		 WHERE username = '%s' AND mapping_key = '%s'
-		 LIMIT 1`,
-		escapeSQL(username),
-		escapeSQL(mappingKey),
-	)
-	rows, err := s.db.QueryContext(ctx, query)
+		 WHERE username = $1 AND mapping_key = $2
+		 LIMIT 1`
+	rows, err := s.db.QueryContext(ctx, query, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(mappingKey))
 	if err != nil {
 		return nil, err
 	}
@@ -92,40 +87,27 @@ func (s *UserMappingService) Upsert(ctx context.Context, username, mappingKey st
 		partid = 10
 	}
 	dataStr := string(data)
-	updateSQL := fmt.Sprintf(
-		`UPDATE user_mapping_settings
-		 SET data = '%s', partid = %d
-		 WHERE username = '%s' AND mapping_key = '%s'
-		 RETURNING guid`,
-		escapeJSONData(dataStr),
-		partid,
-		escapeSQL(username),
-		escapeSQL(mappingKey),
-	)
+	updateSQL := `UPDATE user_mapping_settings
+		 SET data = $1, partid = $2
+		 WHERE username = $3 AND mapping_key = $4
+		 RETURNING guid`
 	var updatedGUID string
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, updateSQL).Scan(&updatedGUID); err == nil {
+	if err := queryRow(ctx, updateSQL, jsonDataParam(dataStr), partid, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(mappingKey)).Scan(&updatedGUID); err == nil {
 		return updatedGUID, nil
 	} else if err != sql.ErrNoRows {
 		return "", err
 	}
 
 	guid := newGUID()
-	insertSQL := fmt.Sprintf(
-		`INSERT INTO user_mapping_settings (guid, username, partid, mapping_key, data, create_date)
-		 VALUES ('%s', '%s', %d, '%s', '%s', current_timestamp)
-		 RETURNING guid`,
-		escapeSQL(guid),
-		escapeSQL(username),
-		partid,
-		escapeSQL(mappingKey),
-		escapeJSONData(dataStr),
-	)
+	insertSQL := `INSERT INTO user_mapping_settings (guid, username, partid, mapping_key, data, create_date)
+		 VALUES ($1, $2, $3, $4, $5, current_timestamp)
+		 RETURNING guid`
 	var inserted string
-	if err := queryRow(ctx, insertSQL).Scan(&inserted); err != nil {
+	if err := queryRow(ctx, insertSQL, sqlvalidator.SanitizeBoundString(guid), sqlvalidator.SanitizeBoundString(username), partid, sqlvalidator.SanitizeBoundString(mappingKey), jsonDataParam(dataStr)).Scan(&inserted); err != nil {
 		return guid, err
 	}
 	if inserted != "" {
@@ -139,19 +121,15 @@ func (s *UserMappingService) Delete(ctx context.Context, username, mappingKey st
 	if s.db == nil {
 		return false, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`DELETE FROM user_mapping_settings
-		 WHERE username = '%s' AND mapping_key = '%s'
-		 RETURNING id`,
-		escapeSQL(username),
-		escapeSQL(mappingKey),
-	)
+	query := `DELETE FROM user_mapping_settings
+		 WHERE username = $1 AND mapping_key = $2
+		 RETURNING id`
 	var deletedID int64
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, query).Scan(&deletedID); err != nil {
+	if err := queryRow(ctx, query, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(mappingKey)).Scan(&deletedID); err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
 		}

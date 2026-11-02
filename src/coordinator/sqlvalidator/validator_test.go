@@ -796,6 +796,31 @@ func TestSafeString(t *testing.T) {
 	}
 }
 
+func TestSanitizeBoundString(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{"literal", `homer\path'; SELECT 42; -- café`, `homer\path'; SELECT 42; -- café`},
+		{"controls", "a\x00\x01\x08\x0b\x0c\x1f\t\n\rb\x7f\u0085", "a\t\n\rb\x7f\u0085"},
+		{"long_unicode", strings.Repeat("é", 999) + "界tail", strings.Repeat("é", 999) + "界"},
+		{"multibyte_below_limit", strings.Repeat("界", 500), strings.Repeat("界", 500)},
+		{"truncate_before_strip", strings.Repeat("é", 999) + "\x00tail", strings.Repeat("é", 999)},
+		{"invalid_utf8", "a\xffb", "a\ufffdb"},
+		{"empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SanitizeBoundString(tc.input); got != tc.want {
+				t.Fatalf("bound text = %q, want %q", got, tc.want)
+			}
+			// Existing literal callers retain exactly their previous escaping.
+			wantLiteral := strings.NewReplacer("'", "''", `\`, `\\`).Replace(tc.want)
+			if got := SafeString(tc.input); got != wantLiteral {
+				t.Fatalf("literal text = %q, want %q", got, wantLiteral)
+			}
+		})
+	}
+}
+
 // ---- Tokenizer tests -------------------------------------------------------
 
 func TestTokenizer(t *testing.T) {

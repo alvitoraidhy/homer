@@ -93,12 +93,9 @@ func (s *ScriptsService) GetByGUID(ctx context.Context, guid string) (*HepScript
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`SELECT id, guid, profile, hep_alias, type, hepid, status, script
-		 FROM %s WHERE guid = '%s' LIMIT 1`,
-		CorrelationScriptsTable, escapeSQL(guid),
-	)
-	rows, err := s.db.QueryContext(ctx, query)
+	query := fmt.Sprintf(`SELECT id, guid, profile, hep_alias, type, hepid, status, script
+		 FROM %s WHERE guid = $1 LIMIT 1`, CorrelationScriptsTable)
+	rows, err := s.db.QueryContext(ctx, query, sqlvalidator.SanitizeBoundString(guid))
 	if err != nil {
 		return nil, err
 	}
@@ -123,26 +120,16 @@ func (s *ScriptsService) Create(ctx context.Context, item HepScript) (string, er
 	if item.GUID == "" {
 		item.GUID = newGUID()
 	}
-	// Script body can be large Lua source; escapeSQL (SafeString) truncates at 1k — use long-text embedding.
-	insertSQL := fmt.Sprintf(
-		`INSERT INTO %s (guid, profile, hep_alias, type, hepid, status, script, create_date)
-		 VALUES ('%s', '%s', '%s', '%s', %d, %t, '%s', current_timestamp)
-		 RETURNING guid`,
-		CorrelationScriptsTable,
-		escapeSQL(item.GUID),
-		escapeSQL(item.Profile),
-		escapeSQL(item.HepAlias),
-		escapeSQL(item.Type),
-		item.HepID,
-		item.Status,
-		escapeJSONData(item.Script),
-	)
+	// Bind the full Lua source without SQL escaping or truncation.
+	insertSQL := fmt.Sprintf(`INSERT INTO %s (guid, profile, hep_alias, type, hepid, status, script, create_date)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, current_timestamp)
+		 RETURNING guid`, CorrelationScriptsTable)
 	var guid string
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, insertSQL).Scan(&guid); err != nil {
+	if err := queryRow(ctx, insertSQL, sqlvalidator.SanitizeBoundString(item.GUID), sqlvalidator.SanitizeBoundString(item.Profile), sqlvalidator.SanitizeBoundString(item.HepAlias), sqlvalidator.SanitizeBoundString(item.Type), item.HepID, item.Status, jsonDataParam(item.Script)).Scan(&guid); err != nil {
 		return item.GUID, err
 	}
 	return guid, nil
@@ -152,26 +139,16 @@ func (s *ScriptsService) Update(ctx context.Context, guid string, item HepScript
 	if s.db == nil {
 		return "", fmt.Errorf("settings db not available")
 	}
-	updateSQL := fmt.Sprintf(
-		`UPDATE %s
-		 SET profile = '%s', hep_alias = '%s', type = '%s', hepid = %d, status = %t, script = '%s'
-		 WHERE guid = '%s'
-		 RETURNING guid`,
-		CorrelationScriptsTable,
-		escapeSQL(item.Profile),
-		escapeSQL(item.HepAlias),
-		escapeSQL(item.Type),
-		item.HepID,
-		item.Status,
-		escapeJSONData(item.Script),
-		escapeSQL(guid),
-	)
+	updateSQL := fmt.Sprintf(`UPDATE %s
+		 SET profile = $1, hep_alias = $2, type = $3, hepid = $4, status = $5, script = $6
+		 WHERE guid = $7
+		 RETURNING guid`, CorrelationScriptsTable)
 	var updated string
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, updateSQL).Scan(&updated); err != nil {
+	if err := queryRow(ctx, updateSQL, sqlvalidator.SanitizeBoundString(item.Profile), sqlvalidator.SanitizeBoundString(item.HepAlias), sqlvalidator.SanitizeBoundString(item.Type), item.HepID, item.Status, jsonDataParam(item.Script), sqlvalidator.SanitizeBoundString(guid)).Scan(&updated); err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
 		}
@@ -184,16 +161,13 @@ func (s *ScriptsService) Delete(ctx context.Context, guid string) (bool, error) 
 	if s.db == nil {
 		return false, fmt.Errorf("settings db not available")
 	}
-	deleteSQL := fmt.Sprintf(
-		`DELETE FROM %s WHERE guid = '%s' RETURNING id`,
-		CorrelationScriptsTable, escapeSQL(guid),
-	)
+	deleteSQL := fmt.Sprintf(`DELETE FROM %s WHERE guid = $1 RETURNING id`, CorrelationScriptsTable)
 	var id int64
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, deleteSQL).Scan(&id); err != nil {
+	if err := queryRow(ctx, deleteSQL, sqlvalidator.SanitizeBoundString(guid)).Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
 		}

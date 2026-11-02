@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sipcapture/homer-core/src/coordinator/sqlvalidator"
 )
 
 // UserPreferencesTable is the settings-DuckDB table for generic per-user rows
@@ -48,15 +50,11 @@ func (s *UserSettingsService) ListByUser(ctx context.Context, username string) (
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`SELECT id, guid, username, partid, category, param, data
+	query := fmt.Sprintf(`SELECT id, guid, username, partid, category, param, data
 		 FROM %s
-		 WHERE username = '%s'
-		 ORDER BY id`,
-		UserPreferencesTable,
-		escapeSQL(username),
-	)
-	rows, err := s.db.QueryContext(ctx, query)
+		 WHERE username = $1
+		 ORDER BY id`, UserPreferencesTable)
+	rows, err := s.db.QueryContext(ctx, query, sqlvalidator.SanitizeBoundString(username))
 	if err != nil {
 		return nil, err
 	}
@@ -85,45 +83,27 @@ func (s *UserSettingsService) UpsertByCategory(ctx context.Context, username, ca
 	}
 
 	dataStr := string(data)
-	updateSQL := fmt.Sprintf(
-		`UPDATE %s
-		 SET param = '%s', data = '%s', partid = %d
-		 WHERE username = '%s' AND category = '%s' AND param = '%s'
-		 RETURNING guid`,
-		UserPreferencesTable,
-		escapeSQL(param),
-		escapeJSONData(dataStr),
-		partid,
-		escapeSQL(username),
-		escapeSQL(category),
-		escapeSQL(param),
-	)
+	updateSQL := fmt.Sprintf(`UPDATE %s
+		 SET param = $1, data = $2, partid = $3
+		 WHERE username = $4 AND category = $5 AND param = $6
+		 RETURNING guid`, UserPreferencesTable)
 	var updatedGUID string
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, updateSQL).Scan(&updatedGUID); err == nil {
+	if err := queryRow(ctx, updateSQL, sqlvalidator.SanitizeBoundString(param), jsonDataParam(dataStr), partid, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(category), sqlvalidator.SanitizeBoundString(param)).Scan(&updatedGUID); err == nil {
 		return updatedGUID, nil
 	} else if err != sql.ErrNoRows {
 		return "", err
 	}
 
 	guid := newGUID()
-	insertSQL := fmt.Sprintf(
-		`INSERT INTO %s (guid, username, partid, category, param, data, create_date)
-		 VALUES ('%s', '%s', %d, '%s', '%s', '%s', current_timestamp)
-		 RETURNING guid`,
-		UserPreferencesTable,
-		escapeSQL(guid),
-		escapeSQL(username),
-		partid,
-		escapeSQL(category),
-		escapeSQL(param),
-		escapeJSONData(dataStr),
-	)
+	insertSQL := fmt.Sprintf(`INSERT INTO %s (guid, username, partid, category, param, data, create_date)
+		 VALUES ($1, $2, $3, $4, $5, $6, current_timestamp)
+		 RETURNING guid`, UserPreferencesTable)
 	var inserted string
-	if err := queryRow(ctx, insertSQL).Scan(&inserted); err != nil {
+	if err := queryRow(ctx, insertSQL, sqlvalidator.SanitizeBoundString(guid), sqlvalidator.SanitizeBoundString(username), partid, sqlvalidator.SanitizeBoundString(category), sqlvalidator.SanitizeBoundString(param), jsonDataParam(dataStr)).Scan(&inserted); err != nil {
 		return guid, err
 	}
 	if inserted != "" {
@@ -137,16 +117,11 @@ func (s *UserSettingsService) ListByCategory(ctx context.Context, username, cate
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`SELECT id, guid, username, partid, category, param, data
+	query := fmt.Sprintf(`SELECT id, guid, username, partid, category, param, data
 		 FROM %s
-		 WHERE username = '%s' AND category = '%s'
-		 ORDER BY id`,
-		UserPreferencesTable,
-		escapeSQL(username),
-		escapeSQL(category),
-	)
-	rows, err := s.db.QueryContext(ctx, query)
+		 WHERE username = $1 AND category = $2
+		 ORDER BY id`, UserPreferencesTable)
+	rows, err := s.db.QueryContext(ctx, query, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(category))
 	if err != nil {
 		return nil, err
 	}
@@ -170,17 +145,11 @@ func (s *UserSettingsService) GetByCategoryAndParam(ctx context.Context, usernam
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`SELECT id, guid, username, partid, category, param, data
+	query := fmt.Sprintf(`SELECT id, guid, username, partid, category, param, data
 		 FROM %s
-		 WHERE username = '%s' AND category = '%s' AND param = '%s'
-		 LIMIT 1`,
-		UserPreferencesTable,
-		escapeSQL(username),
-		escapeSQL(category),
-		escapeSQL(param),
-	)
-	rows, err := s.db.QueryContext(ctx, query)
+		 WHERE username = $1 AND category = $2 AND param = $3
+		 LIMIT 1`, UserPreferencesTable)
+	rows, err := s.db.QueryContext(ctx, query, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(category), sqlvalidator.SanitizeBoundString(param))
 	if err != nil {
 		return nil, err
 	}
@@ -203,21 +172,15 @@ func (s *UserSettingsService) DeleteByCategoryAndParam(ctx context.Context, user
 	if s.db == nil {
 		return false, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`DELETE FROM %s
-		 WHERE username = '%s' AND category = '%s' AND param = '%s'
-		 RETURNING id`,
-		UserPreferencesTable,
-		escapeSQL(username),
-		escapeSQL(category),
-		escapeSQL(param),
-	)
+	query := fmt.Sprintf(`DELETE FROM %s
+		 WHERE username = $1 AND category = $2 AND param = $3
+		 RETURNING id`, UserPreferencesTable)
 	var deletedID int64
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, query).Scan(&deletedID); err != nil {
+	if err := queryRow(ctx, query, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(category), sqlvalidator.SanitizeBoundString(param)).Scan(&deletedID); err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
 		}
@@ -230,20 +193,15 @@ func (s *UserSettingsService) DeleteByCategory(ctx context.Context, username, ca
 	if s.db == nil {
 		return false, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`DELETE FROM %s
-		 WHERE username = '%s' AND category = '%s'
-		 RETURNING id`,
-		UserPreferencesTable,
-		escapeSQL(username),
-		escapeSQL(category),
-	)
+	query := fmt.Sprintf(`DELETE FROM %s
+		 WHERE username = $1 AND category = $2
+		 RETURNING id`, UserPreferencesTable)
 	var deletedID int64
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, query).Scan(&deletedID); err != nil {
+	if err := queryRow(ctx, query, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(category)).Scan(&deletedID); err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
 		}

@@ -59,10 +59,10 @@ func EnsureSettingsSchema(db *sql.DB) error {
 	if postgres {
 		// The DuckDB PostgreSQL extension cannot create sequences or resolve
 		// their defaults. Schema statements contain no bound parameters; send
-		// the complete DDL to PostgreSQL through the extension connection.
+		// each schema-qualified DDL statement through the extension connection.
 		exec = func(query string, _ ...any) (sql.Result, error) {
 			return db.Exec("CALL postgres_execute('"+settingsPostgresCatalog+"', ?)",
-				"SET LOCAL search_path = public; "+query)
+				postgresSettingsDDL(query))
 		}
 	}
 	statements := []string{
@@ -257,8 +257,9 @@ func EnsureSettingsSchema(db *sql.DB) error {
 	}
 	if postgres {
 		// Native DDL does not update the extension's cached catalog metadata.
-		_, err := db.Exec("CALL pg_clear_cache()")
-		return err
+		if _, err := db.Exec("CALL pg_clear_cache()"); err != nil {
+			return fmt.Errorf("refresh PostgreSQL settings metadata: %w", err)
+		}
 	}
 
 	return nil
@@ -280,4 +281,15 @@ func settingsAliasOptionalColumns() []string {
 		`ALTER TABLE alias ADD COLUMN IF NOT EXISTS tag3 VARCHAR`,
 		`ALTER TABLE alias ADD COLUMN IF NOT EXISTS tag4 VARCHAR`,
 	}
+}
+
+// postgresSettingsDDL qualifies only the fixed schema statements above. It
+// never handles user SQL. Each invocation sends exactly one statement.
+func postgresSettingsDDL(query string) string {
+	return strings.NewReplacer(
+		"CREATE SEQUENCE IF NOT EXISTS ", "CREATE SEQUENCE IF NOT EXISTS public.",
+		"CREATE TABLE IF NOT EXISTS ", "CREATE TABLE IF NOT EXISTS public.",
+		"ALTER TABLE ", "ALTER TABLE public.",
+		"nextval('", "nextval('public.",
+	).Replace(query)
 }

@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/sipcapture/homer-core/src/config"
+	"github.com/sipcapture/homer-core/src/coordinator/sqlvalidator"
 )
 
 // ErrDashboardNotWritable is returned when the dashboard is visible (typically
@@ -33,6 +34,7 @@ func NewDashboardService(db *sql.DB, widgetControl map[string]bool) *DashboardSe
 }
 
 func (s *DashboardService) ListDashboards(ctx context.Context, username string) ([]UserSetting, error) {
+	username = sqlvalidator.SanitizeBoundString(username)
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
@@ -61,16 +63,14 @@ func (s *DashboardService) ListDashboards(ctx context.Context, username string) 
 }
 
 func (s *DashboardService) GetDashboard(ctx context.Context, username, dashboardID string) (*UserSetting, error) {
+	username = sqlvalidator.SanitizeBoundString(username)
 	if s.db == nil {
 		return nil, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`SELECT id, guid, username, partid, dashboard_id, data
+	query := `SELECT id, guid, username, partid, dashboard_id, data
 		 FROM dashboard_settings
-		 WHERE dashboard_id = '%s'`,
-		escapeSQL(dashboardID),
-	)
-	rows, err := s.db.QueryContext(ctx, query)
+		 WHERE dashboard_id = $1`
+	rows, err := s.db.QueryContext(ctx, query, sqlvalidator.SanitizeBoundString(dashboardID))
 	if err != nil {
 		return nil, err
 	}
@@ -100,13 +100,9 @@ func (s *DashboardService) CreateDashboard(ctx context.Context, username, dashbo
 		return "", fmt.Errorf("settings db not available")
 	}
 
-	sqlCheck := fmt.Sprintf(
-		`SELECT username FROM dashboard_settings
-		 WHERE username = '%s' AND dashboard_id = '%s' LIMIT 1`,
-		escapeSQL(username),
-		escapeSQL(dashboardID),
-	)
-	row := s.db.QueryRowContext(ctx, sqlCheck)
+	sqlCheck := `SELECT username FROM dashboard_settings
+		 WHERE username = $1 AND dashboard_id = $2 LIMIT 1`
+	row := s.db.QueryRowContext(ctx, sqlCheck, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(dashboardID))
 	var owner sql.NullString
 	if err := row.Scan(&owner); err != nil && err != sql.ErrNoRows {
 		return "", err
@@ -116,21 +112,15 @@ func (s *DashboardService) CreateDashboard(ctx context.Context, username, dashbo
 	}
 
 	guid := newGUID()
-	sqlInsert := fmt.Sprintf(
-		`INSERT INTO dashboard_settings (guid, username, partid, dashboard_id, data, create_date)
-		 VALUES ('%s', '%s', %d, '%s', $1, current_timestamp)
-		 RETURNING guid`,
-		escapeSQL(guid),
-		escapeSQL(username),
-		10,
-		escapeSQL(dashboardID),
-	)
+	sqlInsert := `INSERT INTO dashboard_settings (guid, username, partid, dashboard_id, data, create_date)
+		 VALUES ($2, $3, $4, $5, $1, current_timestamp)
+		 RETURNING guid`
 	var inserted string
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, sqlInsert, jsonDataParam(string(data))).Scan(&inserted); err != nil {
+	if err := queryRow(ctx, sqlInsert, jsonDataParam(string(data)), sqlvalidator.SanitizeBoundString(guid), sqlvalidator.SanitizeBoundString(username), 10, sqlvalidator.SanitizeBoundString(dashboardID)).Scan(&inserted); err != nil {
 		return guid, err
 	}
 	if inserted != "" {
@@ -140,6 +130,7 @@ func (s *DashboardService) CreateDashboard(ctx context.Context, username, dashbo
 }
 
 func (s *DashboardService) UpdateDashboard(ctx context.Context, username, dashboardID string, data json.RawMessage, isAdmin bool) (string, error) {
+	username = sqlvalidator.SanitizeBoundString(username)
 	if s.db == nil {
 		return "", fmt.Errorf("settings db not available")
 	}
@@ -161,19 +152,16 @@ func (s *DashboardService) UpdateDashboard(ctx context.Context, username, dashbo
 	}
 
 	// Key by guid so a shared id like "home" cannot clobber another user's row.
-	sqlUpdate := fmt.Sprintf(
-		`UPDATE dashboard_settings
+	sqlUpdate := `UPDATE dashboard_settings
 		 SET data = $1
-		 WHERE guid = '%s'
-		 RETURNING guid`,
-		escapeSQL(target.GUID),
-	)
+		 WHERE guid = $2
+		 RETURNING guid`
 	var guid string
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, sqlUpdate, jsonDataParam(string(data))).Scan(&guid); err != nil {
+	if err := queryRow(ctx, sqlUpdate, jsonDataParam(string(data)), sqlvalidator.SanitizeBoundString(target.GUID)).Scan(&guid); err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
 		}
@@ -209,19 +197,15 @@ func (s *DashboardService) DeleteDashboard(ctx context.Context, username, dashbo
 	if s.db == nil {
 		return false, fmt.Errorf("settings db not available")
 	}
-	query := fmt.Sprintf(
-		`DELETE FROM dashboard_settings
-		 WHERE username = '%s' AND dashboard_id = '%s'
-		 RETURNING id`,
-		escapeSQL(username),
-		escapeSQL(dashboardID),
-	)
+	query := `DELETE FROM dashboard_settings
+		 WHERE username = $1 AND dashboard_id = $2
+		 RETURNING id`
 	var deletedID int64
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, query).Scan(&deletedID); err != nil {
+	if err := queryRow(ctx, query, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(dashboardID)).Scan(&deletedID); err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
 		}
@@ -234,12 +218,9 @@ func (s *DashboardService) ResetDashboards(ctx context.Context, username string)
 	if s.db == nil {
 		return fmt.Errorf("settings db not available")
 	}
-	sqlDelete := fmt.Sprintf(
-		`DELETE FROM dashboard_settings
-		 WHERE username = '%s'`,
-		escapeSQL(username),
-	)
-	if _, err := s.db.ExecContext(ctx, sqlDelete); err != nil {
+	sqlDelete := `DELETE FROM dashboard_settings
+		 WHERE username = $1`
+	if _, err := s.db.ExecContext(ctx, sqlDelete, sqlvalidator.SanitizeBoundString(username)); err != nil {
 		return err
 	}
 

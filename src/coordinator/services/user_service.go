@@ -82,7 +82,7 @@ func (s *UserService) GetUserByUsername(ctx context.Context, username string) (*
 		FROM users
 		WHERE lower(trim(username)) = lower(trim(?))
 		LIMIT 1`
-	row := s.db.QueryRowContext(ctx, query, username)
+	row := s.db.QueryRowContext(ctx, query, sqlvalidator.SanitizeBoundString(username))
 	return scanUserRow(row)
 }
 
@@ -100,7 +100,7 @@ func (s *UserService) GetUserByEmail(ctx context.Context, email string) (*User, 
 		FROM users
 		WHERE lower(trim(email)) = lower(trim(?))
 		LIMIT 1`
-	row := s.db.QueryRowContext(ctx, query, email)
+	row := s.db.QueryRowContext(ctx, query, sqlvalidator.SanitizeBoundString(email))
 	return scanUserRow(row)
 }
 
@@ -202,24 +202,16 @@ func (s *UserService) CreateUser(ctx context.Context, username, password, email,
 		return 0, err
 	}
 
-	query := fmt.Sprintf(
-		`INSERT INTO users (username, password_hash, email, full_name, is_admin, is_active, created_at, updated_at)
-		 VALUES ('%s', '%s', '%s', '%s', %t, %t, current_timestamp, current_timestamp)
-		 RETURNING id`,
-		sqlvalidator.SafeString(username),
-		sqlvalidator.SafeString(passwordHash),
-		sqlvalidator.SafeString(email),
-		sqlvalidator.SafeString(displayName),
-		isAdmin,
-		isActive,
-	)
+	query := `INSERT INTO users (username, password_hash, email, full_name, is_admin, is_active, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, current_timestamp, current_timestamp)
+		 RETURNING id`
 
 	var id int64
 	queryRow := s.db.QueryRowContext
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, query).Scan(&id); err != nil {
+	if err := queryRow(ctx, query, sqlvalidator.SanitizeBoundString(username), sqlvalidator.SanitizeBoundString(passwordHash), sqlvalidator.SanitizeBoundString(email), sqlvalidator.SanitizeBoundString(displayName), isAdmin, isActive).Scan(&id); err != nil {
 		return 0, err
 	}
 	return id, nil
@@ -232,8 +224,13 @@ func (s *UserService) UpdateUser(ctx context.Context, id int64, email, password,
 	}
 
 	set := make([]string, 0)
+	args := []any{id}
+	bind := func(column string, value any) {
+		args = append(args, value)
+		set = append(set, fmt.Sprintf("%s = $%d", column, len(args)))
+	}
 	if email != nil {
-		set = append(set, fmt.Sprintf("email = '%s'", sqlvalidator.SafeString(*email)))
+		bind("email", sqlvalidator.SanitizeBoundString(*email))
 	}
 	if password != nil {
 		if passwordhash.IsDefaultSipcapturePassword(*password) {
@@ -243,16 +240,16 @@ func (s *UserService) UpdateUser(ctx context.Context, id int64, email, password,
 		if err != nil {
 			return false, err
 		}
-		set = append(set, fmt.Sprintf("password_hash = '%s'", sqlvalidator.SafeString(passwordHash)))
+		bind("password_hash", sqlvalidator.SanitizeBoundString(passwordHash))
 	}
 	if displayName != nil {
-		set = append(set, fmt.Sprintf("full_name = '%s'", sqlvalidator.SafeString(*displayName)))
+		bind("full_name", sqlvalidator.SanitizeBoundString(*displayName))
 	}
 	if isAdmin != nil {
-		set = append(set, fmt.Sprintf("is_admin = %t", *isAdmin))
+		bind("is_admin", *isAdmin)
 	}
 	if isActive != nil {
-		set = append(set, fmt.Sprintf("is_active = %t", *isActive))
+		bind("is_active", *isActive)
 	}
 	if len(set) == 0 {
 		return false, fmt.Errorf("no fields to update")
@@ -260,9 +257,8 @@ func (s *UserService) UpdateUser(ctx context.Context, id int64, email, password,
 	set = append(set, "updated_at = current_timestamp")
 
 	query := fmt.Sprintf(
-		`UPDATE users SET %s WHERE id = %d RETURNING id`,
+		`UPDATE users SET %s WHERE id = $1 RETURNING id`,
 		strings.Join(set, ", "),
-		id,
 	)
 
 	var updatedID int64
@@ -270,7 +266,7 @@ func (s *UserService) UpdateUser(ctx context.Context, id int64, email, password,
 	if isPostgresSettings(s.db) {
 		queryRow = postgresQueryRow(s.db)
 	}
-	if err := queryRow(ctx, query).Scan(&updatedID); err != nil {
+	if err := queryRow(ctx, query, args...).Scan(&updatedID); err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
 		}
