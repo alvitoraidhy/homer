@@ -145,6 +145,20 @@ func TestPostgresDuckLakeTieredVolumes(t *testing.T) {
 	if hot != 1 || cold != 2 {
 		t.Fatal("volumes are not isolated")
 	}
+	maintenance, err := tsm.fileCleanupDB(tsm.volumes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tierSpill, maintenanceSpill string
+	if err := tsm.db.QueryRow("SELECT current_setting('temp_directory')").Scan(&tierSpill); err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenance.QueryRow("SELECT current_setting('temp_directory')").Scan(&maintenanceSpill); err != nil {
+		t.Fatal(err)
+	}
+	if tierSpill == maintenanceSpill {
+		t.Fatal("independent tiering and maintenance instances share spill files")
+	}
 }
 
 func TestPostgresTierStartupClosesOnAttachFailure(t *testing.T) {

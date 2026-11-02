@@ -2212,6 +2212,14 @@ func (n *Node) GetListenAddr() string {
 // configureDuckLake configures DuckDB to use DuckLake extension
 // Returns list of attached volumes for tiered storage support
 func configureDuckLake(db *sql.DB, cfg *config.NodeConfig) ([]VolumeInfo, error) {
+	catalogPath := cfg.DuckLake.CatalogPath
+	for _, vol := range cfg.DuckLake.Volumes {
+		if ducklake.IsPostgresCatalogPath(vol.CatalogPath) {
+			catalogPath = vol.CatalogPath
+			break
+		}
+	}
+
 	// Apply DuckDB engine tuning before loading extensions so the
 	// reader-side process honours the operator-configured memory cap
 	// even during DuckLake bring-up. Same knobs as the writer side.
@@ -2225,7 +2233,7 @@ func configureDuckLake(db *sql.DB, cfg *config.NodeConfig) ([]VolumeInfo, error)
 		cfg.DuckLake.Tuning.Threads,
 		cfg.DuckLake.Tuning.MemoryLimit,
 		cfg.DuckLake.Tuning.TempDirectory,
-		cfg.DuckLake.CatalogPath,
+		catalogPath,
 		"node",
 	)
 

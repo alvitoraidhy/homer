@@ -335,6 +335,10 @@ func ApplyHomerDuckDBDefaults(db *sql.DB, threads int, memoryLimit, tempDirector
 	}
 	tempDir := strings.TrimSpace(tempDirectory)
 	if tempDir == "" {
+		if IsPostgresCatalogPath(catalogPath) {
+			logger.Warn("DuckDB: PostgreSQL catalog has no local spill directory; disk spilling is disabled; set tuning.temp_directory to a writable local directory",
+				"where", who)
+		}
 		tempDir = DefaultSpillDirectory(catalogPath)
 		if tempDir != "" {
 			logger.Info("DuckDB: defaulting spill directory (operator did not set tuning.temp_directory)",
