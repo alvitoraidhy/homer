@@ -11,6 +11,7 @@ package writer
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -64,9 +65,9 @@ type Writer struct {
 	connCount int64
 
 	// Services
-	compactionService *CompactionService
-	tieringService    *TieringService
-	tieredStorage     *ducklake.TieredStorageManager
+	compactionServices []*CompactionService
+	tieringService     *TieringService
+	tieredStorage      *ducklake.TieredStorageManager
 
 	// Receivers
 	udpServer   *UDPServer
@@ -430,9 +431,9 @@ func (w *Writer) Stop() error {
 			w.httpsServer.Stop()
 		}
 
-		// Stop compaction service
-		if w.compactionService != nil {
-			w.compactionService.Stop()
+		// Stop maintenance on every shard before closing writer databases.
+		for _, service := range w.compactionServices {
+			service.Stop()
 		}
 
 		// Stop tiering service
@@ -871,7 +872,7 @@ func (w *Writer) logStats() {
 	}
 }
 
-// startCompactionService maintains the primary shard. Tiered local storage
+// startCompactionService maintains every shard. Tiered local storage
 // requires full compaction; other disabled configurations still drain inline data.
 func (w *Writer) startCompactionService() error {
 	storage := w.storageConfig.DuckLake
@@ -931,28 +932,31 @@ func (w *Writer) startCompactionService() error {
 			}
 		}
 	}
-	w.compactionService = NewCompactionService(
-		w.ducklakeManager.GetDB(),
-		w.ducklakeManager.GetLakeName(),
-		storage.DataPath,
-		w.ducklakeManager.GetCatalogPath(),
-		cfg,
-		w.ducklakeManager,
-		compactionS3,
-		compactionAzure,
-	)
-	if err := w.compactionService.UseMaintenanceDB(func() (*sql.DB, func() error, error) {
-		m, err := w.ducklakeManager.OpenMaintenanceDB(storage.Compaction.MemoryLimit)
-		if err != nil {
-			return nil, nil, err
-		}
-		return m.DB, m.Close, nil
-	}); err != nil {
-		logger.Warn("Writer: compaction runs on the shared writer DuckDB because its dedicated instance "+
-			"could not be opened; a fatal merge error will then affect ingest and search",
-			"error", err)
+	shards := w.ducklakeManager.GetShards()
+	cfg.SharedDataPath = len(shards) > 1
+	if cfg.SharedDataPath {
+		logger.Info("Writer: orphan scans disabled for shared shard data directory", "shards", len(shards))
 	}
-	return w.compactionService.Start()
+	var startErr error
+	for _, shard := range shards {
+		service := NewCompactionService(shard.GetDB(), shard.GetLakeName(), storage.DataPath, shard.GetCatalogPath(), cfg, shard, compactionS3, compactionAzure)
+		if err := service.UseMaintenanceDB(func() (*sql.DB, func() error, error) {
+			m, err := shard.OpenMaintenanceDB(storage.Compaction.MemoryLimit)
+			if err != nil {
+				return nil, nil, err
+			}
+			return m.DB, m.Close, nil
+		}); err != nil {
+			logger.Warn("Writer: compaction uses the shared writer DuckDB; a fatal merge error can affect ingest and search", "lake", shard.GetLakeName(), "error", err)
+		}
+		if err := service.Start(); err != nil {
+			service.Stop()
+			startErr = errors.Join(startErr, fmt.Errorf("start compaction for %s: %w", shard.GetLakeName(), err))
+			continue
+		}
+		w.compactionServices = append(w.compactionServices, service)
+	}
+	return startErr
 }
 
 // startTieringService initializes and starts the tiering service

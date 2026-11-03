@@ -50,6 +50,8 @@ func extractBrokenParquetPath(err error) string {
 
 // CompactionConfig holds compaction settings
 type CompactionConfig struct {
+	// SharedDataPath disables orphan scans: files may belong to another shard catalog.
+	SharedDataPath   bool                 `json:"-"`
 	CatalogType      ducklake.CatalogType `json:"-"` // Supplied by storage.ducklake.catalog_type.
 	Enable           bool                 `json:"enable"`
 	CheckIntervalSec int                  `json:"check_interval_sec"` // How often to run compaction (default: 3600 = 1 hour)
@@ -849,7 +851,11 @@ func (c *CompactionService) runMaintenanceCalls() {
 			logger.Info("CompactionService: Azure credential_chain file cleanup using native SDK",
 				"lake", c.lakeName,
 				"workaround", "sipcapture/homer#1023")
-			err := ducklake.RunAzureNativeFileCleanup(c.context(), c.database(), c.lakeName, c.dataPath, ducklakeAzureConfig(c.azureClient))
+			cleanup := ducklake.RunAzureNativeFileCleanup
+			if c.config.SharedDataPath {
+				cleanup = ducklake.RunAzureNativeScheduledFileCleanup
+			}
+			err := cleanup(c.context(), c.database(), c.lakeName, c.dataPath, ducklakeAzureConfig(c.azureClient))
 			if !c.recordMaintenanceResult("azure native file cleanup", err) && err != nil {
 				c.warnMaintenanceS3Failure("azure native file cleanup", err)
 			}
@@ -867,17 +873,19 @@ func (c *CompactionService) runMaintenanceCalls() {
 			}
 		})
 
-		// 3. Delete orphaned files — lock for this call only
-		c.withCatalogLock(func() {
-			c.ensureS3ClientSettings()
-			c.ensureAzureClientSettings()
-			logger.Info("CompactionService: Delete orphaned files", "lake", c.lakeName)
-			orphanSQL := fmt.Sprintf("CALL ducklake_delete_orphaned_files('%s', cleanup_all => true)", c.lakeName)
-			_, err := c.execWithRetry(orphanSQL)
-			if !c.recordMaintenanceResult("delete_orphaned_files", err) && err != nil {
-				c.warnMaintenanceS3Failure("delete_orphaned_files", err)
-			}
-		})
+		if !c.config.SharedDataPath {
+			// 3. Delete orphaned files — lock for this call only
+			c.withCatalogLock(func() {
+				c.ensureS3ClientSettings()
+				c.ensureAzureClientSettings()
+				logger.Info("CompactionService: Delete orphaned files", "lake", c.lakeName)
+				orphanSQL := fmt.Sprintf("CALL ducklake_delete_orphaned_files('%s', cleanup_all => true)", c.lakeName)
+				_, err := c.execWithRetry(orphanSQL)
+				if !c.recordMaintenanceResult("delete_orphaned_files", err) && err != nil {
+					c.warnMaintenanceS3Failure("delete_orphaned_files", err)
+				}
+			})
+		}
 	}
 
 	// 4. Remove empty directories (no catalog lock needed — filesystem only)

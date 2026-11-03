@@ -121,8 +121,18 @@ the CLI does not automatically union PostgreSQL shard catalogs.
 ## Maintain PostgreSQL catalogs
 
 DuckLake SQL compaction and separate maintenance DuckDB attachments support
-PostgreSQL. Existing automatic compaction still targets the primary writer shard;
-this change does not add an automatic maintenance loop for every shard.
+PostgreSQL. Automatic maintenance starts one service per writer shard, using that
+shard's database, lake name, catalog path, and catalog lock. A busy catalog does
+not prevent maintenance on other shards. Disabling compaction still starts an
+inline-flush service for every shard. All shard services stop before writer
+connections close.
+
+Shards share a Parquet directory. Automatic shard maintenance therefore skips
+orphan-file scans, which cannot distinguish another catalog's live files from
+orphans. Retention, merging, snapshot expiration, and cleanup of files explicitly
+retired by each catalog still run. Reclaim true orphans only with a procedure
+that considers every catalog sharing the directory. The compaction memory limit
+applies to each shard's maintenance instance; size pod memory for all instances.
 
 SQLite WAL, file locks, startup repair, integrity checks and catalog file backups
 are skipped for PostgreSQL. Native compaction and native tier moves fall back to

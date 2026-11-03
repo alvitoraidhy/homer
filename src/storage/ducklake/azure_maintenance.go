@@ -65,6 +65,17 @@ func RunAzureNativeFileCleanup(ctx context.Context, db *sql.DB, lakeName, dataPa
 	return runAzureNativeFileCleanup(ctx, db, lakeName, dataPath, store)
 }
 
+// RunAzureNativeScheduledFileCleanup deletes only files retired by this catalog.
+// Shared shard directories cannot safely be scanned for unreferenced objects.
+func RunAzureNativeScheduledFileCleanup(ctx context.Context, db *sql.DB, lakeName, dataPath string, cfg mover.AzureConfig) error {
+	store, err := mover.NewAzureStore(cfg)
+	if err != nil {
+		return err
+	}
+	_, err = azureCleanupOldFiles(ctx, db, lakeName, dataPath, store)
+	return err
+}
+
 func runAzureNativeFileCleanup(ctx context.Context, db *sql.DB, lakeName, dataPath string, store azureObjectStore) error {
 	if db == nil {
 		return fmt.Errorf("azure native cleanup: database handle is nil")

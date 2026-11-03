@@ -258,7 +258,7 @@ func (m *Manager) GetDB() *sql.DB {
 
 // GetCatalogPath returns the actual primary catalog, including shard suffixes.
 func (m *Manager) GetCatalogPath() string {
-	return m.sharded.Primary().config.CatalogPath
+	return m.sharded.Primary().GetCatalogPath()
 }
 
 // OpenMaintenanceDB opens a DuckDB instance for compaction on the primary

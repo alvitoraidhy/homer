@@ -906,6 +906,9 @@ func (mtw *MultiTableWriter) GetDB() *sql.DB {
 	return mtw.db
 }
 
+// GetCatalogPath returns this shard's resolved catalog, including its suffix.
+func (mtw *MultiTableWriter) GetCatalogPath() string { return mtw.config.CatalogPath }
+
 // GetLakeName returns the lake name
 func (mtw *MultiTableWriter) GetLakeName() string {
 	return mtw.lakeName
